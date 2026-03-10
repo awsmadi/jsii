@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -200,7 +199,7 @@ func (p *Process) extractOrCacheRuntime() (string, error) {
 		return p.extractToTempDir()
 	}
 
-	staging, err := ioutil.TempDir(parent, ".jsii-staging-*")
+	staging, err := os.MkdirTemp(parent, ".jsii-staging-*")
 	if err != nil {
 		return p.extractToTempDir()
 	}
@@ -235,7 +234,7 @@ func (p *Process) extractOrCacheRuntime() (string, error) {
 
 // extractToTempDir is the original extraction logic using a temporary directory.
 func (p *Process) extractToTempDir() (string, error) {
-	tmpdir, err := ioutil.TempDir("", "jsii-runtime.*")
+	tmpdir, err := os.MkdirTemp("", "jsii-runtime.*")
 	if err != nil {
 		return "", err
 	}

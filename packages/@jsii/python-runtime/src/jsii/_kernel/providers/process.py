@@ -5,7 +5,6 @@ import contextlib
 import enum
 import hashlib
 import json
-import logging
 import os
 import os.path
 import pathlib
