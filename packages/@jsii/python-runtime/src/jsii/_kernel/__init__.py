@@ -362,6 +362,11 @@ class Kernel(metaclass=Singleton):
         return obj.__jsii_ref__
 
     def delete(self, ref: ObjRef) -> None:
+        # Invalidate all cached properties for the deleted object
+        keys_to_remove = [k for k in self._property_cache if k[0] == ref.ref]
+        for k in keys_to_remove:
+            del self._property_cache[k]
+
         self.provider.delete(DeleteRequest(objref=ref))
 
     @_dereferenced
@@ -374,10 +379,9 @@ class Kernel(metaclass=Singleton):
             cache: If True, cache the value for readonly properties (default: False)
         """
         # Check cache if caching is enabled
-        if cache:
-            cache_key = (obj.__jsii_ref__.ref, property)
-            if cache_key in self._property_cache:
-                return self._property_cache[cache_key]
+        cache_key = (obj.__jsii_ref__.ref, property) if cache else None
+        if cache_key is not None and cache_key in self._property_cache:
+            return self._property_cache[cache_key]
 
         response = self.provider.get(
             GetRequest(objref=obj.__jsii_ref__, property=property)
@@ -388,8 +392,7 @@ class Kernel(metaclass=Singleton):
             result = response.value
 
         # Store in cache if caching is enabled
-        if cache:
-            cache_key = (obj.__jsii_ref__.ref, property)
+        if cache_key is not None:
             self._property_cache[cache_key] = result
 
         return result
@@ -423,7 +426,7 @@ class Kernel(metaclass=Singleton):
             StaticGetRequest(fqn=klass.__jsii_type__, property=property)
         ).value
 
-        # Static properties are immutable, always cache
+        # Cache the value (invalidated by sset())
         self._static_cache[cache_key] = result
         return result
 

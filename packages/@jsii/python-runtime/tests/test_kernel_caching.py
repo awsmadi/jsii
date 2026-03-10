@@ -5,19 +5,14 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import unittest
-from unittest.mock import Mock, MagicMock, call
+from unittest.mock import Mock
 
 # Direct imports from source
 from jsii._kernel import Kernel
 from jsii._kernel.types import (
     ObjRef,
-    GetRequest,
     GetResponse,
-    SetRequest,
     SetResponse,
-    StaticGetRequest,
-    StaticSetRequest,
-    EnumRef,
 )
 
 
@@ -186,6 +181,33 @@ class TestKernelPropertyCaching(unittest.TestCase):
         self.assertEqual(self.mock_provider.get.call_count, 2)
         self.assertEqual(result1, "value-prop1")
         self.assertEqual(result2, "value-prop2")
+
+
+    def test_cache_invalidation_on_delete(self):
+        """Test that delete() invalidates all cached properties for the object."""
+        obj = Mock()
+        obj.__jsii_ref__ = ObjRef(ref="test-ref-123")
+
+        # Mock provider response
+        response = GetResponse(value="cached-value")
+        self.mock_provider.get.return_value = response
+
+        # Cache a property
+        self.kernel.get(obj, "prop1", cache=True)
+        self.kernel.get(obj, "prop2", cache=True)
+        self.assertEqual(self.mock_provider.get.call_count, 2)
+
+        # Delete the object
+        self.kernel.delete(obj.__jsii_ref__)
+
+        # Mock new response
+        response2 = GetResponse(value="new-value")
+        self.mock_provider.get.return_value = response2
+
+        # Get again - should call provider because cache was invalidated by delete
+        result = self.kernel.get(obj, "prop1", cache=True)
+        self.assertEqual(self.mock_provider.get.call_count, 3)
+        self.assertEqual(result, "new-value")
 
 
 if __name__ == "__main__":
