@@ -138,10 +138,13 @@ def _recursize_dereference(kernel: "Kernel", d: Any) -> Any:
     elif isinstance(d, ObjRef):
         return _reference_map.resolve_reference(kernel, d)
     elif isinstance(d, EnumRef):
-        # Cache enum resolutions - enums are immutable
-        if d not in kernel._enum_cache:
-            kernel._enum_cache[d] = _recursize_dereference(kernel, d.ref)(d.member)
-        return kernel._enum_cache[d]
+        # Cache enum resolutions - enums are immutable.
+        # Use (ref_string, member) as key since ObjRef may not be hashable
+        # when interfaces is a non-None list.
+        cache_key = (d.ref.ref, d.member)
+        if cache_key not in kernel._enum_cache:
+            kernel._enum_cache[cache_key] = _recursize_dereference(kernel, d.ref)(d.member)
+        return kernel._enum_cache[cache_key]
     else:
         return d
 
@@ -299,8 +302,8 @@ class Kernel(metaclass=Singleton):
         self._property_cache: Dict[Tuple[str, str], Any] = {}
         # Cache for static properties: (fqn, property_name) -> value
         self._static_cache: Dict[Tuple[str, str], Any] = {}
-        # Cache for enum resolutions: EnumRef -> resolved_value
-        self._enum_cache: Dict[EnumRef, Any] = {}
+        # Cache for enum resolutions: (fqn, member) -> resolved_value
+        self._enum_cache: Dict[Tuple[str, str], Any] = {}
 
     # TODO: Do we want to return anything from this method? Is the return value useful
     #       to anyone?
