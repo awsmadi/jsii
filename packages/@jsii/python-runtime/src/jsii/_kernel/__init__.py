@@ -376,7 +376,8 @@ class Kernel(metaclass=Singleton):
         Args:
             obj: The object to get the property from
             property: The property name
-            cache: If True, cache the value for readonly properties (default: False)
+            cache: If True, cache the value for readonly properties (default: False).
+                Only safe for properties that are never modified via callbacks.
         """
         # Check cache if caching is enabled
         cache_key = (obj.__jsii_ref__.ref, property) if cache else None
@@ -414,7 +415,7 @@ class Kernel(metaclass=Singleton):
 
     @_dereferenced
     def sget(self, klass: Type, property: str) -> Any:
-        """Get a static property value. Static properties are always cached."""
+        """Get a static property value. Cached until invalidated by sset()."""
         cache_key = (klass.__jsii_type__, property)
 
         # Check cache first

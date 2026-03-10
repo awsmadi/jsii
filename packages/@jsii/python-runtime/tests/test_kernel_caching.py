@@ -190,7 +190,6 @@ class TestKernelPropertyCaching(unittest.TestCase):
         self.assertEqual(result1, "value-prop1")
         self.assertEqual(result2, "value-prop2")
 
-
     def test_cache_invalidation_on_delete(self):
         """Test that delete() invalidates all cached properties for the object."""
         obj = Mock()
