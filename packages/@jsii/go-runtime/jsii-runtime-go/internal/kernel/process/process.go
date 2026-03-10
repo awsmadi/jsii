@@ -182,10 +182,15 @@ func (p *Process) extractOrCacheRuntime() (string, error) {
 	}
 
 	marker := filepath.Join(cacheDir, ".jsii_cache_complete")
+	entrypoint := embedded.EntrypointPath(cacheDir)
 	if _, err := os.Stat(marker); err == nil {
-		// Cache hit
-		p.usingCache = true
-		return embedded.EntrypointPath(cacheDir), nil
+		// Cache hit - verify entrypoint exists to guard against corruption
+		if _, err := os.Stat(entrypoint); err == nil {
+			p.usingCache = true
+			return entrypoint, nil
+		}
+		// Corrupted cache: marker present but entrypoint missing. Remove and re-extract.
+		os.RemoveAll(cacheDir)
 	}
 
 	// Cache miss - extract to a temp sibling, then atomically rename.

@@ -5,10 +5,12 @@ import contextlib
 import enum
 import hashlib
 import json
+import logging
 import os
 import os.path
 import pathlib
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -271,10 +273,14 @@ class _NodeProcess:
         if os.path.isfile(marker):
             entrypoint_name = jsii._embedded.jsii.ENTRYPOINT
             entrypoint_file = jsii._embedded.jsii.EMBEDDED_FILES[entrypoint_name]
-            self._using_cache = True
-            return os.path.join(
+            cached_entrypoint = os.path.join(
                 cache_dir, entrypoint_file.replace("/", os.sep)
             )
+            if os.path.isfile(cached_entrypoint):
+                self._using_cache = True
+                return cached_entrypoint
+            # Corrupted cache: marker present but entrypoint missing
+            shutil.rmtree(cache_dir, ignore_errors=True)
 
         # Cache miss - extract to a staging dir, then atomically rename.
         # This prevents concurrent processes from reading partial extractions.
@@ -308,7 +314,6 @@ class _NodeProcess:
             try:
                 os.rename(staging, cache_dir)
             except OSError:
-                import shutil
                 shutil.rmtree(staging, ignore_errors=True)
                 # Check if the other process left a valid cache
                 if os.path.isfile(marker):
