@@ -167,6 +167,9 @@ func NewProcess(compatibleVersions string) (*Process, error) {
 
 // extractOrCacheRuntime extracts the embedded runtime to a persistent cache
 // directory, or falls back to a temporary directory if caching is disabled.
+// Extraction uses an atomic rename pattern: files are extracted to a temporary
+// sibling directory, then renamed to the final cache path. This prevents
+// concurrent processes from reading partially-extracted files.
 func (p *Process) extractOrCacheRuntime() (string, error) {
 	noCache := strings.TrimSpace(os.Getenv("JSII_RUNTIME_NO_CACHE"))
 	if noCache == "1" || strings.EqualFold(noCache, "true") {
@@ -185,26 +188,44 @@ func (p *Process) extractOrCacheRuntime() (string, error) {
 		return embedded.EntrypointPath(cacheDir), nil
 	}
 
-	// Cache miss - extract
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	// Cache miss - extract to a temp sibling, then atomically rename.
+	// This prevents concurrent processes from reading partial extractions.
+	parent := filepath.Dir(cacheDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return p.extractToTempDir()
 	}
 
-	entrypoint, err := embedded.ExtractRuntime(cacheDir)
+	staging, err := ioutil.TempDir(parent, ".jsii-staging-*")
 	if err != nil {
-		// Fall back to temp dir on extraction failure
-		os.RemoveAll(cacheDir)
 		return p.extractToTempDir()
 	}
 
-	// Write marker after successful extraction
-	if err := os.WriteFile(marker, []byte("ok"), 0o644); err != nil {
-		// Non-fatal: cache works but won't be detected next time
-		fmt.Fprintf(os.Stderr, "warning: could not write cache marker: %v\n", err)
+	if _, err := embedded.ExtractRuntime(staging); err != nil {
+		os.RemoveAll(staging)
+		return p.extractToTempDir()
+	}
+
+	// Write marker inside staging before rename
+	stagingMarker := filepath.Join(staging, ".jsii_cache_complete")
+	if err := os.WriteFile(stagingMarker, []byte("ok"), 0o644); err != nil {
+		os.RemoveAll(staging)
+		return p.extractToTempDir()
+	}
+
+	// Atomic rename. If another process raced us, rename fails and we
+	// clean up our staging dir, then use whatever is already there.
+	if err := os.Rename(staging, cacheDir); err != nil {
+		os.RemoveAll(staging)
+		// Check if the other process left a valid cache
+		if _, err := os.Stat(marker); err == nil {
+			p.usingCache = true
+			return embedded.EntrypointPath(cacheDir), nil
+		}
+		return p.extractToTempDir()
 	}
 
 	p.usingCache = true
-	return entrypoint, nil
+	return embedded.EntrypointPath(cacheDir), nil
 }
 
 // extractToTempDir is the original extraction logic using a temporary directory.

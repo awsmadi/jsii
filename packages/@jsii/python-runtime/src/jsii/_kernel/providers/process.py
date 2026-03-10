@@ -276,31 +276,59 @@ class _NodeProcess:
                 cache_dir, entrypoint_file.replace("/", os.sep)
             )
 
-        # Cache miss - extract to cache dir
-        os.makedirs(cache_dir, exist_ok=True)
+        # Cache miss - extract to a staging dir, then atomically rename.
+        # This prevents concurrent processes from reading partial extractions.
+        try:
+            parent = os.path.dirname(cache_dir)
+            os.makedirs(parent, exist_ok=True)
+            staging = tempfile.mkdtemp(prefix=".jsii-staging-", dir=parent)
 
-        resources = {
-            resname: os.path.join(cache_dir, filename.replace("/", os.sep))
-            for resname, filename in jsii._embedded.jsii.EMBEDDED_FILES.items()
-        }
+            resources = {
+                resname: os.path.join(staging, filename.replace("/", os.sep))
+                for resname, filename in jsii._embedded.jsii.EMBEDDED_FILES.items()
+            }
 
-        for resname, filename in resources.items():
-            pathlib.Path(os.path.dirname(filename)).mkdir(
-                parents=True, exist_ok=True
-            )
-            with open(filename, "wb") as fp:
-                fp.write(
-                    importlib_resources.files(jsii._embedded.jsii)
-                    .joinpath(resname)
-                    .read_bytes()
+            for resname, filename in resources.items():
+                pathlib.Path(os.path.dirname(filename)).mkdir(
+                    parents=True, exist_ok=True
                 )
+                with open(filename, "wb") as fp:
+                    fp.write(
+                        importlib_resources.files(jsii._embedded.jsii)
+                        .joinpath(resname)
+                        .read_bytes()
+                    )
 
-        # Write marker after all files are extracted successfully
-        with open(marker, "w") as fp:
-            fp.write(__jsii_runtime_version__)
+            # Write marker inside staging before rename
+            staging_marker = os.path.join(staging, ".jsii_cache_complete")
+            with open(staging_marker, "w") as fp:
+                fp.write(__jsii_runtime_version__)
 
-        self._using_cache = True
-        return resources[jsii._embedded.jsii.ENTRYPOINT]
+            # Atomic rename. If another process raced us, this may fail.
+            try:
+                os.rename(staging, cache_dir)
+            except OSError:
+                import shutil
+                shutil.rmtree(staging, ignore_errors=True)
+                # Check if the other process left a valid cache
+                if os.path.isfile(marker):
+                    self._using_cache = True
+                    entrypoint_name = jsii._embedded.jsii.ENTRYPOINT
+                    entrypoint_file = jsii._embedded.jsii.EMBEDDED_FILES[entrypoint_name]
+                    return os.path.join(
+                        cache_dir, entrypoint_file.replace("/", os.sep)
+                    )
+                return self._extract_to_tempdir()
+
+            self._using_cache = True
+            entrypoint_name = jsii._embedded.jsii.ENTRYPOINT
+            entrypoint_file = jsii._embedded.jsii.EMBEDDED_FILES[entrypoint_name]
+            return os.path.join(
+                cache_dir, entrypoint_file.replace("/", os.sep)
+            )
+        except Exception:
+            # Fall back to temp dir on any cache failure
+            return self._extract_to_tempdir()
 
     def _extract_to_tempdir(self) -> str:
         tmpdir = self._ctx_stack.enter_context(tempfile.TemporaryDirectory())
