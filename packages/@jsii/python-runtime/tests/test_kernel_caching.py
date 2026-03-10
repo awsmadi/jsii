@@ -190,6 +190,30 @@ class TestKernelPropertyCaching(unittest.TestCase):
         self.assertEqual(result1, "value-prop1")
         self.assertEqual(result2, "value-prop2")
 
+    def test_set_only_invalidates_target_property(self):
+        """Test that set() only invalidates the specific property, not others."""
+        obj = Mock()
+        obj.__jsii_ref__ = ObjRef(ref="test-ref-123")
+
+        # Mock provider responses
+        response_a = GetResponse(value="value-a")
+        response_b = GetResponse(value="value-b")
+        self.mock_provider.get.side_effect = [response_a, response_b]
+        self.mock_provider.set.return_value = SetResponse()
+
+        # Cache two properties
+        self.kernel.get(obj, "propA", cache=True)
+        self.kernel.get(obj, "propB", cache=True)
+        self.assertEqual(self.mock_provider.get.call_count, 2)
+
+        # Set propA (should only invalidate propA's cache)
+        self.kernel.set(obj, "propA", "new-value-a")
+
+        # propB should still be cached (no provider call)
+        result_b = self.kernel.get(obj, "propB", cache=True)
+        self.assertEqual(self.mock_provider.get.call_count, 2)  # unchanged
+        self.assertEqual(result_b, "value-b")
+
     def test_cache_invalidation_on_delete(self):
         """Test that delete() invalidates all cached properties for the object."""
         obj = Mock()
