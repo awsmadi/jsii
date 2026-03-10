@@ -3,7 +3,7 @@ import inspect
 import itertools
 from types import FunctionType, MethodType, BuiltinFunctionType, LambdaType
 
-from typing import Callable, cast, Any, List, Optional, Sequence, Type
+from typing import Callable, cast, Any, Dict, List, Optional, Sequence, Tuple, Type
 
 import functools
 
@@ -138,7 +138,10 @@ def _recursize_dereference(kernel: "Kernel", d: Any) -> Any:
     elif isinstance(d, ObjRef):
         return _reference_map.resolve_reference(kernel, d)
     elif isinstance(d, EnumRef):
-        return _recursize_dereference(kernel, d.ref)(d.member)
+        # Cache enum resolutions - enums are immutable
+        if d not in kernel._enum_cache:
+            kernel._enum_cache[d] = _recursize_dereference(kernel, d.ref)(d.member)
+        return kernel._enum_cache[d]
     else:
         return d
 
@@ -292,6 +295,12 @@ class Kernel(metaclass=Singleton):
 
     def __init__(self, provider_class: Type[BaseProvider] = ProcessProvider) -> None:
         self.provider = provider_class()
+        # Cache for readonly instance properties: (objref, property_name) -> value
+        self._property_cache: Dict[Tuple[str, str], Any] = {}
+        # Cache for static properties: (fqn, property_name) -> value
+        self._static_cache: Dict[Tuple[str, str], Any] = {}
+        # Cache for enum resolutions: EnumRef -> resolved_value
+        self._enum_cache: Dict[EnumRef, Any] = {}
 
     # TODO: Do we want to return anything from this method? Is the return value useful
     #       to anyone?
@@ -356,16 +365,40 @@ class Kernel(metaclass=Singleton):
         self.provider.delete(DeleteRequest(objref=ref))
 
     @_dereferenced
-    def get(self, obj: Any, property: str) -> Any:
+    def get(self, obj: Any, property: str, cache: bool = False) -> Any:
+        """Get a property value from an object.
+
+        Args:
+            obj: The object to get the property from
+            property: The property name
+            cache: If True, cache the value for readonly properties (default: False)
+        """
+        # Check cache if caching is enabled
+        if cache:
+            cache_key = (obj.__jsii_ref__.ref, property)
+            if cache_key in self._property_cache:
+                return self._property_cache[cache_key]
+
         response = self.provider.get(
             GetRequest(objref=obj.__jsii_ref__, property=property)
         )
         if isinstance(response, Callback):
-            return _callback_till_result(self, response, GetResponse)
+            result = _callback_till_result(self, response, GetResponse)
         else:
-            return response.value
+            result = response.value
+
+        # Store in cache if caching is enabled
+        if cache:
+            cache_key = (obj.__jsii_ref__.ref, property)
+            self._property_cache[cache_key] = result
+
+        return result
 
     def set(self, obj: Any, property: str, value: Any) -> None:
+        # Invalidate cache entry if it exists
+        cache_key = (obj.__jsii_ref__.ref, property)
+        self._property_cache.pop(cache_key, None)
+
         response = self.provider.set(
             SetRequest(
                 objref=obj.__jsii_ref__,
@@ -378,11 +411,27 @@ class Kernel(metaclass=Singleton):
 
     @_dereferenced
     def sget(self, klass: Type, property: str) -> Any:
-        return self.provider.sget(
+        """Get a static property value. Static properties are always cached."""
+        cache_key = (klass.__jsii_type__, property)
+
+        # Check cache first
+        if cache_key in self._static_cache:
+            return self._static_cache[cache_key]
+
+        # Fetch from kernel
+        result = self.provider.sget(
             StaticGetRequest(fqn=klass.__jsii_type__, property=property)
         ).value
 
+        # Static properties are immutable, always cache
+        self._static_cache[cache_key] = result
+        return result
+
     def sset(self, klass: Type, property: str, value: Any) -> None:
+        # Invalidate cache entry if it exists
+        cache_key = (klass.__jsii_type__, property)
+        self._static_cache.pop(cache_key, None)
+
         self.provider.sset(
             StaticSetRequest(
                 fqn=klass.__jsii_type__,
