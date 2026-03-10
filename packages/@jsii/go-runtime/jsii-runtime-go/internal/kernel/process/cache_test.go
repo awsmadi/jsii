@@ -3,6 +3,7 @@ package process
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestRuntimeCacheDir(t *testing.T) {
 			t.Fatal("expected non-empty cache dir")
 		}
 		expected := filepath.Join("/tmp/xdg-test", "aws", "jsii")
-		if !filepath.HasPrefix(dir, expected) {
+		if !strings.HasPrefix(dir, expected) {
 			t.Errorf("expected dir to start with %v, got %v", expected, dir)
 		}
 	})
