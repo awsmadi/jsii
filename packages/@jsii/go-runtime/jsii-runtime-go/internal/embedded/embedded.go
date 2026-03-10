@@ -1,9 +1,13 @@
 package embedded
 
 import (
+	"crypto/sha256"
 	"embed"
+	"fmt"
+	"hash"
 	"os"
 	"path"
+	"sort"
 )
 
 // embeddedRootDir is the name of the root directory for the embeddedFS variable.
@@ -24,6 +28,41 @@ func ExtractRuntime(into string) (entrypoint string, err error) {
 		entrypoint = path.Join(into, entrypointName)
 	}
 	return
+}
+
+// EntrypointPath returns the path to the entrypoint within a given root directory.
+func EntrypointPath(root string) string {
+	return path.Join(root, entrypointName)
+}
+
+// RuntimeHash returns a short hex hash of all embedded runtime files, used
+// to construct version-specific cache directory names.
+func RuntimeHash() string {
+	h := sha256.New()
+	hashEmbeddedDir(h, embeddedRootDir)
+	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
+
+func hashEmbeddedDir(h hash.Hash, dir string) {
+	files, err := embeddedFS.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.Name())
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		src := path.Join(dir, name)
+		h.Write([]byte(name))
+		if data, err := embeddedFS.ReadFile(src); err == nil {
+			h.Write(data)
+		} else {
+			// It's a directory; recurse
+			hashEmbeddedDir(h, src)
+		}
+	}
 }
 
 // extractRuntime copies the contents of embeddedFS at "from" to the provided

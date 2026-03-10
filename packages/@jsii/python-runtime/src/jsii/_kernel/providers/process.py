@@ -3,6 +3,7 @@ import base64
 import datetime
 import contextlib
 import enum
+import hashlib
 import json
 import os
 import os.path
@@ -149,6 +150,37 @@ def jdefault(obj):
     raise TypeError("Don't know how to convert object to JSON: %r" % obj)
 
 
+def _compute_runtime_hash():
+    h = hashlib.sha256()
+    h.update(__jsii_runtime_version__.encode("utf-8"))
+    for resname in sorted(jsii._embedded.jsii.EMBEDDED_FILES.keys()):
+        data = (
+            importlib_resources.files(jsii._embedded.jsii)
+            .joinpath(resname)
+            .read_bytes()
+        )
+        h.update(resname.encode("utf-8"))
+        h.update(data)
+    return h.hexdigest()[:16]
+
+
+def _get_cache_dir():
+    override = os.environ.get("JSII_RUNTIME_CACHE_DIR")
+    if override:
+        return override
+
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg:
+        base = xdg
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".cache")
+
+    runtime_hash = _compute_runtime_hash()
+    return os.path.join(
+        base, "aws", "jsii", f"runtime-{__jsii_runtime_version__}-{runtime_hash}"
+    )
+
+
 class _NodeProcess:
     def __init__(self):
         self._serializer = cattr.Converter()
@@ -223,11 +255,54 @@ class _NodeProcess:
         self._serializer.register_structure_hook(ObjRef, _with_reference)
 
         self._ctx_stack = contextlib.ExitStack()
+        self._using_cache = False
 
     def __del__(self):
         self.stop()
 
     def _jsii_runtime(self) -> str:
+        no_cache = os.environ.get("JSII_RUNTIME_NO_CACHE", "").strip()
+        if no_cache == "1" or no_cache.lower() == "true":
+            return self._extract_to_tempdir()
+
+        cache_dir = _get_cache_dir()
+        marker = os.path.join(cache_dir, ".jsii_cache_complete")
+
+        if os.path.isfile(marker):
+            entrypoint_name = jsii._embedded.jsii.ENTRYPOINT
+            entrypoint_file = jsii._embedded.jsii.EMBEDDED_FILES[entrypoint_name]
+            self._using_cache = True
+            return os.path.join(
+                cache_dir, entrypoint_file.replace("/", os.sep)
+            )
+
+        # Cache miss - extract to cache dir
+        os.makedirs(cache_dir, exist_ok=True)
+
+        resources = {
+            resname: os.path.join(cache_dir, filename.replace("/", os.sep))
+            for resname, filename in jsii._embedded.jsii.EMBEDDED_FILES.items()
+        }
+
+        for resname, filename in resources.items():
+            pathlib.Path(os.path.dirname(filename)).mkdir(
+                parents=True, exist_ok=True
+            )
+            with open(filename, "wb") as fp:
+                fp.write(
+                    importlib_resources.files(jsii._embedded.jsii)
+                    .joinpath(resname)
+                    .read_bytes()
+                )
+
+        # Write marker after all files are extracted successfully
+        with open(marker, "w") as fp:
+            fp.write(__jsii_runtime_version__)
+
+        self._using_cache = True
+        return resources[jsii._embedded.jsii.ENTRYPOINT]
+
+    def _extract_to_tempdir(self) -> str:
         tmpdir = self._ctx_stack.enter_context(tempfile.TemporaryDirectory())
         resources = {
             resname: os.path.join(tmpdir, filename.replace("/", os.sep))
@@ -243,7 +318,6 @@ class _NodeProcess:
                     .read_bytes()
                 )
 
-        # Return our first path, which should be the path for jsii-runtime.js
         return resources[jsii._embedded.jsii.ENTRYPOINT]
 
     def _next_message(self) -> Mapping[Any, Any]:

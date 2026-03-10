@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -31,8 +32,9 @@ type ErrorResponse struct {
 type Process struct {
 	compatibleVersions *semver.Constraints
 
-	cmd    *exec.Cmd
-	tmpdir string
+	cmd        *exec.Cmd
+	tmpdir     string
+	usingCache bool
 
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
@@ -48,6 +50,28 @@ type Process struct {
 	mutex sync.Mutex
 }
 
+// runtimeCacheDir returns the persistent cache directory for the embedded runtime.
+// It respects JSII_RUNTIME_CACHE_DIR override and XDG_CACHE_HOME.
+func runtimeCacheDir() string {
+	if override := os.Getenv("JSII_RUNTIME_CACHE_DIR"); override != "" {
+		return override
+	}
+
+	var base string
+	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
+		base = xdg
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".cache")
+	}
+
+	runtimeHash := embedded.RuntimeHash()
+	return filepath.Join(base, "aws", "jsii", fmt.Sprintf("runtime-%s", runtimeHash))
+}
+
 // NewProcess prepares a new child process, but does not start it yet. It will
 // be automatically started whenever the client attempts to send a request
 // to it.
@@ -55,7 +79,8 @@ type Process struct {
 // If the JSII_RUNTIME environment variable is set, this command will be used
 // to start the child process, in a sub-shell (using %COMSPEC% or cmd.exe on
 // Windows; $SHELL or /bin/sh on other OS'es). Otherwise, the embedded runtime
-// application will be extracted into a temporary directory, and used.
+// application will be extracted into a cache directory (or temporary directory
+// if caching is disabled), and used.
 //
 // The current process' environment is inherited by the child process. Additional
 // environment may be injected into the child process' environment - all of which
@@ -97,19 +122,16 @@ func NewProcess(compatibleVersions string) (*Process, error) {
 			args = []string{"-c", custom}
 		}
 		p.cmd = exec.Command(command, args...)
-	} else if tmpdir, err := ioutil.TempDir("", "jsii-runtime.*"); err != nil {
-		return nil, err
 	} else {
-		p.tmpdir = tmpdir
-		if entrypoint, err := embedded.ExtractRuntime(tmpdir); err != nil {
+		entrypoint, err := p.extractOrCacheRuntime()
+		if err != nil {
 			p.Close()
 			return nil, err
+		}
+		if node := os.Getenv(JSII_NODE); node != "" {
+			p.cmd = exec.Command(node, entrypoint)
 		} else {
-			if node := os.Getenv(JSII_NODE); node != "" {
-				p.cmd = exec.Command(node, entrypoint)
-			} else {
-				p.cmd = exec.Command("node", entrypoint)
-			}
+			p.cmd = exec.Command("node", entrypoint)
 		}
 	}
 
@@ -141,6 +163,63 @@ func NewProcess(compatibleVersions string) (*Process, error) {
 	}
 
 	return &p, nil
+}
+
+// extractOrCacheRuntime extracts the embedded runtime to a persistent cache
+// directory, or falls back to a temporary directory if caching is disabled.
+func (p *Process) extractOrCacheRuntime() (string, error) {
+	noCache := strings.TrimSpace(os.Getenv("JSII_RUNTIME_NO_CACHE"))
+	if noCache == "1" || strings.EqualFold(noCache, "true") {
+		return p.extractToTempDir()
+	}
+
+	cacheDir := runtimeCacheDir()
+	if cacheDir == "" {
+		return p.extractToTempDir()
+	}
+
+	marker := filepath.Join(cacheDir, ".jsii_cache_complete")
+	if _, err := os.Stat(marker); err == nil {
+		// Cache hit
+		p.usingCache = true
+		return embedded.EntrypointPath(cacheDir), nil
+	}
+
+	// Cache miss - extract
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return p.extractToTempDir()
+	}
+
+	entrypoint, err := embedded.ExtractRuntime(cacheDir)
+	if err != nil {
+		// Fall back to temp dir on extraction failure
+		os.RemoveAll(cacheDir)
+		return p.extractToTempDir()
+	}
+
+	// Write marker after successful extraction
+	if err := os.WriteFile(marker, []byte("ok"), 0o644); err != nil {
+		// Non-fatal: cache works but won't be detected next time
+		fmt.Fprintf(os.Stderr, "warning: could not write cache marker: %v\n", err)
+	}
+
+	p.usingCache = true
+	return entrypoint, nil
+}
+
+// extractToTempDir is the original extraction logic using a temporary directory.
+func (p *Process) extractToTempDir() (string, error) {
+	tmpdir, err := ioutil.TempDir("", "jsii-runtime.*")
+	if err != nil {
+		return "", err
+	}
+	p.tmpdir = tmpdir
+
+	entrypoint, err := embedded.ExtractRuntime(tmpdir)
+	if err != nil {
+		return "", err
+	}
+	return entrypoint, nil
 }
 
 func (p *Process) ensureStarted() error {
@@ -289,7 +368,7 @@ func (p *Process) Close() {
 	}
 
 	if p.tmpdir != "" {
-		// Clean up any temporary directory we provisioned.
+		// Clean up any temporary directory we provisioned (not cached dirs).
 		if err := os.RemoveAll(p.tmpdir); err != nil {
 			fmt.Fprintf(os.Stderr, "could not clean up temporary directory: %v\n", err)
 		}
