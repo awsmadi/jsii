@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 # Direct imports from source
 from jsii._kernel import Kernel
+from jsii._utils import Singleton
 from jsii._kernel.types import (
     ObjRef,
     GetResponse,
@@ -21,6 +22,9 @@ class TestKernelPropertyCaching(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        # Reset the Singleton so each test gets a fresh Kernel instance
+        Singleton._instances.pop(Kernel, None)
+
         # Create a mock provider
         self.mock_provider_class = Mock()
         self.mock_provider = Mock()
@@ -28,6 +32,10 @@ class TestKernelPropertyCaching(unittest.TestCase):
 
         # Create kernel with mock provider
         self.kernel = Kernel(provider_class=self.mock_provider_class)
+
+    def tearDown(self):
+        """Clean up singleton after each test."""
+        Singleton._instances.pop(Kernel, None)
 
     def test_instance_property_get_without_cache(self):
         """Test that get() without cache always calls provider."""
