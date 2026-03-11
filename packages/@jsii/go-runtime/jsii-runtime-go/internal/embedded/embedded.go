@@ -7,6 +7,7 @@ import (
 	"hash"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 )
 
@@ -25,14 +26,14 @@ var entrypointName = path.Join("bin", "jsii-runtime.js")
 func ExtractRuntime(into string) (entrypoint string, err error) {
 	err = extractRuntime(into, embeddedRootDir)
 	if err == nil {
-		entrypoint = path.Join(into, entrypointName)
+		entrypoint = filepath.Join(into, entrypointName)
 	}
 	return
 }
 
 // EntrypointPath returns the path to the entrypoint within a given root directory.
 func EntrypointPath(root string) string {
-	return path.Join(root, entrypointName)
+	return filepath.Join(root, entrypointName)
 }
 
 // RuntimeHash returns a short hex hash of all embedded runtime files, used
